@@ -1,21 +1,6 @@
-"""
-effective_rank_experiment.py
-============================
-Tracks the effective rank of BB^T (gradient noise covariance) as a function
-of Adam training steps, for MLPs of varying depth on California Housing
-and Adult Income.
-
-One Adam run per (seed, depth), checkpointed at each milestone; BB^T is
-estimated via Monte Carlo and effective rank is the number of eigenvalues
-needed to explain a given fraction of variance.
-
-Usage
------
-    python effective_rank_experiment.py   # requires central_code.py in same folder
-"""
+"""Effective rank of BBT vs Adam steps for MLPs of varying depth (California Housing, Adult Income)."""
 
 from __future__ import annotations
-
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -23,26 +8,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from matplotlib.lines import Line2D
-
 import torch
 import torch.nn as nn
 
 from central_code import (
-    Dataset,
-    NeuralNetModel,
-    load_california,
-    load_adult,
-    estimate_noise_cov,
-    explained_variance_threshold,
+    Dataset, NeuralNetModel, load_california, load_adult,
+    estimate_noise_cov, explained_variance_threshold,
 )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 1.  NETWORK FACTORY
-# ══════════════════════════════════════════════════════════════════════════════
-
 def make_mlp_factory(input_dim: int, depth: int, hidden_dim: int = 16) -> callable:
-    """Zero-argument factory → MLP with `depth` hidden Tanh layers."""
     def factory() -> nn.Sequential:
         layers: list[nn.Module] = []
         in_dim = input_dim
@@ -54,39 +29,16 @@ def make_mlp_factory(input_dim: int, depth: int, hidden_dim: int = 16) -> callab
     return factory
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2.  EFFECTIVE RANK
-# ══════════════════════════════════════════════════════════════════════════════
-
 def effective_rank(M: np.ndarray, variance_explained: float = 0.99) -> int:
-    """Smallest k s.t. top-k eigenvalues of M explain `variance_explained` of Tr(M)."""
     eigs = np.linalg.eigvalsh(M)
     _, k = explained_variance_threshold(eigs, variance_explained)
     return k
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 3.  SINGLE SEED RUN  —  one training, checkpointed
-# ══════════════════════════════════════════════════════════════════════════════
-
 def run_single_seed(
-    dataset: Dataset,
-    depth: int,
-    hidden_dim: int,
-    task: str,
-    lam: float,
-    training_steps: list[int],
-    seed: int,
-    S: int,
-    n_mc_bbt: int,
-    variance_explained: float,
+    dataset: Dataset, depth: int, hidden_dim: int, task: str, lam: float,
+    training_steps: list[int], seed: int, S: int, n_mc_bbt: int, variance_explained: float,
 ) -> dict[int, int]:
-    """
-    Single Adam run from scratch (seed-controlled), pausing at each milestone
-    to measure rank(BB^T).  Resumes training — never restarts.
-
-    Returns  { n_steps: rank_BBT }
-    """
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -107,7 +59,6 @@ def run_single_seed(
     step = 0
 
     for target in milestones:
-        # Resume training up to this milestone
         while step < target:
             optim.zero_grad()
             pred = net(X_t).squeeze(-1)
@@ -120,13 +71,9 @@ def run_single_seed(
             (data_loss + reg).backward()
             optim.step()
             step += 1
-
-        # Snapshot flat parameters
         theta = np.concatenate(
             [p.detach().cpu().numpy().ravel() for p in net.parameters()])
-
-        # BB^T and its effective rank
-        BBT    = estimate_noise_cov(theta, dataset, model, S, lam=lam, n_mc=n_mc_bbt)
+        BBT = estimate_noise_cov(theta, dataset, model, S, lam=lam, n_mc=n_mc_bbt)
         rank_B = effective_rank(BBT, variance_explained)
         results[target] = rank_B
         print(f"      step={target:>6}  rank(BB^T)={rank_B:>4}")
@@ -134,27 +81,11 @@ def run_single_seed(
     return results
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 4.  SWEEP  (depths × seeds)
-# ══════════════════════════════════════════════════════════════════════════════
-
 def sweep_effective_ranks(
-    dataset: Dataset,
-    depths: list[int],
-    training_steps: list[int],
-    seeds: list[int],
-    task: str,
-    lam: float,
-    S: int,
-    hidden_dim: int           = 16,
-    n_mc_bbt: int             = 2_000,
+    dataset: Dataset, depths: list[int], training_steps: list[int], seeds: list[int],
+    task: str, lam: float, S: int, hidden_dim: int = 16, n_mc_bbt: int = 2_000,
     variance_explained: float = 0.99,
 ) -> dict:
-    """
-    Returns
-    -------
-    results[depth][n_steps] = np.ndarray of shape (n_seeds,)   — rank(BB^T) values
-    """
     results: dict = {d: {t: [] for t in training_steps} for d in depths}
     total = len(depths) * len(seeds)
     run   = 0
@@ -185,26 +116,14 @@ def sweep_effective_ranks(
     return results
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 5.  PLOTTING
-# ══════════════════════════════════════════════════════════════════════════════
-
-_COLORS  = ["#648FFF", "#FE6100", "#785EF0"]
+_COLORS = ["#648FFF", "#FE6100", "#785EF0"]
 _MARKERS = ["o", "s", "^"]
 _BG      = "#f7f8fc"
 _GRID    = "#dde1ee"
 
 
-def _draw_panel(
-    ax: plt.Axes,
-    results: dict,
-    training_steps: list[int],
-    depths: list[int],
-    n_seeds: int,
-    variance_explained: float,
-    title: str,
-) -> None:
-    """Draw one benchmark panel onto `ax`."""
+def _draw_panel(ax: plt.Axes, results: dict, training_steps: list[int], depths: list[int],
+                variance_explained: float, title: str) -> None:
     x = np.array(training_steps)
 
     ax.set_facecolor(_BG)
@@ -230,11 +149,7 @@ def _draw_panel(
     ax.set_xscale("log")
     ax.set_title(title, fontsize=10, fontweight="semibold", pad=5)
     ax.set_xlabel("Adam steps", fontsize=8.5)
-    ax.set_ylabel(
-        r"eff. rank of $BB^\top$"
-        f"  (≥{int(100*variance_explained)}% var.)",
-        fontsize=8.5,
-    )
+    ax.set_ylabel(f"Effective rank of BBT (>{int(100*variance_explained)}% var.)", fontsize=8.5)
     ax.xaxis.set_major_formatter(
         mticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
     ax.tick_params(labelsize=8)
@@ -251,33 +166,17 @@ def build_legend_handles(depths: list[int]) -> list[Line2D]:
 
 
 def plot_all(
-    res_cal: dict,
-    res_adult: dict,
-    training_steps: list[int],
-    depths: list[int],
-    n_seeds: int,
+    res_cal: dict, res_adult: dict, training_steps: list[int], depths: list[int],
     variance_explained: float,
-    save_combined: str  = "effective_rank_combined.pdf",
-    save_cal:      str  = "effective_rank_california.pdf",
-    save_adult:    str  = "effective_rank_adult.pdf",
-    dpi: int            = 220,
+    save_combined: str = "effective_rank_combined.pdf",
+    save_cal: str = "effective_rank_california.pdf",
+    save_adult: str = "effective_rank_adult.pdf",
+    dpi: int = 220,
 ) -> plt.Figure:
-    """
-    Build one figure with two side-by-side panels (one per benchmark).
-    Also saves each panel individually.
-    """
-    fig, axes = plt.subplots(
-        1, 2, figsize=(12, 4.2),
-        constrained_layout=True,
-    )
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.2), constrained_layout=True)
     fig.patch.set_facecolor("white")
-
-    _draw_panel(axes[0], res_cal,   training_steps, depths, n_seeds,
-                variance_explained, title="California Housing")
-    _draw_panel(axes[1], res_adult, training_steps, depths, n_seeds,
-                variance_explained, title="Adult Income")
-
-    # Shared legend below both panels
+    _draw_panel(axes[0], res_cal, training_steps, depths, variance_explained, title="California Housing")
+    _draw_panel(axes[1], res_adult, training_steps, depths, variance_explained, title="Adult Income")
     handles = build_legend_handles(depths)
     fig.legend(
         handles=handles,
@@ -287,27 +186,19 @@ def plot_all(
         framealpha=0.9,
         bbox_to_anchor=(0.5, -0.07),
     )
-
-    # ── Save combined ─────────────────────────────────────────────────────
     fig.savefig(save_combined, dpi=dpi, bbox_inches="tight")
-    print(f"  Saved combined  -> {save_combined}")
-
-    # ── Save California panel individually ────────────────────────────────
+    print(f"  Saved combined -> {save_combined}")
     fig_cal, ax_cal = plt.subplots(figsize=(6, 4.2))
     fig_cal.patch.set_facecolor("white")
-    _draw_panel(ax_cal, res_cal, training_steps, depths, n_seeds,
-                variance_explained, title="California Housing")
+    _draw_panel(ax_cal, res_cal, training_steps, depths, variance_explained, title="California Housing")
     ax_cal.legend(handles=build_legend_handles(depths),
                   fontsize=8.5, framealpha=0.9, loc="best")
     fig_cal.savefig(save_cal, dpi=dpi, bbox_inches="tight")
     plt.close(fig_cal)
     print(f"  Saved California -> {save_cal}")
-
-    # ── Save Adult panel individually ─────────────────────────────────────
     fig_ad, ax_ad = plt.subplots(figsize=(6, 4.2))
     fig_ad.patch.set_facecolor("white")
-    _draw_panel(ax_ad, res_adult, training_steps, depths, n_seeds,
-                variance_explained, title="Adult Income")
+    _draw_panel(ax_ad, res_adult, training_steps, depths, variance_explained, title="Adult Income")
     ax_ad.legend(handles=build_legend_handles(depths),
                  fontsize=8.5, framealpha=0.9, loc="best")
     fig_ad.savefig(save_adult, dpi=dpi, bbox_inches="tight")
@@ -317,26 +208,18 @@ def plot_all(
     return fig
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 6.  MAIN
-# ══════════════════════════════════════════════════════════════════════════════
-
 if __name__ == "__main__":
-
-    DEPTHS         = [1, 2, 3]
-    HIDDEN_DIM     = 16
-    TRAINING_STEPS = list(range(50, 1001, 50)) # [50, 100, 250, 300, 500, 1_000] #, 2_500, 5_000, 10_000]
-    SEEDS          = [0, 1, 2, 3, 4]
-    S              = 64
-    N_MC_BBT       = 1_000    # raise to ~5_000 for publication quality
-    LAM            = 1e-2
-    VARIANCE_EXP   = 0.99
-
+    DEPTHS = [1, 2, 3]
+    HIDDEN_DIM = 16
+    TRAINING_STEPS = list(range(50, 1001, 50))
+    SEEDS = [0, 1, 2, 3, 4]
+    S = 64
+    N_MC_BBT = 1_000
+    LAM = 1e-2
+    VARIANCE_EXP = 0.99
     print("Loading datasets ...")
-    ds_cal   = load_california(normalize=True)
+    ds_cal = load_california(normalize=True)
     ds_adult = load_adult(normalize=True)
-
-    # ── California ────────────────────────────────────────────────────────────
     print(f"\n{'='*60}\n  California Housing\n{'='*60}")
     res_cal = sweep_effective_ranks(
         dataset=ds_cal, depths=DEPTHS, training_steps=TRAINING_STEPS,
@@ -344,8 +227,6 @@ if __name__ == "__main__":
         hidden_dim=HIDDEN_DIM, n_mc_bbt=N_MC_BBT,
         variance_explained=VARIANCE_EXP,
     )
-
-    # ── Adult Income ──────────────────────────────────────────────────────────
     print(f"\n{'='*60}\n  Adult Income\n{'='*60}")
     res_adult = sweep_effective_ranks(
         dataset=ds_adult, depths=DEPTHS, training_steps=TRAINING_STEPS,
@@ -353,12 +234,10 @@ if __name__ == "__main__":
         hidden_dim=HIDDEN_DIM, n_mc_bbt=N_MC_BBT,
         variance_explained=VARIANCE_EXP,
     )
-
-    # ── Plot ──────────────────────────────────────────────────────────────────
     fig = plot_all(
         res_cal=res_cal, res_adult=res_adult,
         training_steps=TRAINING_STEPS, depths=DEPTHS,
-        n_seeds=len(SEEDS), variance_explained=VARIANCE_EXP,
+        variance_explained=VARIANCE_EXP,
     )
     plt.show()
     print("\nDone.")
